@@ -26,17 +26,16 @@ async function getAccessToken() {
   return response.data.access_token;
 }
 
-// Helper to map a single Amadeus offer into our simplified format
-// Helper to map a single Amadeus offer into our simplified format
+/* ---------------------------------------------------------
+   MAP OFFER → OUR FORMAT (Corrected & Complete)
+--------------------------------------------------------- */
 function mapOfferToOption(offer) {
   const firstItinerary = offer.itineraries[0];
   const segments = firstItinerary.segments;
 
-  // travelerPricing (contains fare, baggage, cabin info)
   const traveler = offer.travelerPricings?.[0] || {};
   const fareDetails = traveler.fareDetailsBySegment || [];
 
-  // Build segment-level fare mapping
   const segmentFareMap = {};
   fareDetails.forEach((fd) => {
     const segId = fd.segmentId;
@@ -45,17 +44,16 @@ function mapOfferToOption(offer) {
       class: fd.class || null,
       brandedFare: fd.brandedFare || null,
       fareBasis: fd.fareBasis || null,
-      checkedBags: fd.includedCheckedBags?.quantity ?? null
+      checkedBags: fd.includedCheckedBags?.quantity ?? null,
     };
   });
 
-  // DEFAULT: if no segment-specific data available
   const fallbackFare = {
     cabin: null,
     class: null,
     brandedFare: null,
     fareBasis: null,
-    checkedBags: null
+    checkedBags: null,
   };
 
   return {
@@ -65,7 +63,7 @@ function mapOfferToOption(offer) {
     duration: firstItinerary.duration,
     airline: segments[0]?.carrierCode,
 
-    // For overall cabin/baggage: use the FIRST segment of the trip
+    // Overall cabin/baggage taken from first segment
     cabin: segmentFareMap[segments[0].id]?.cabin ?? null,
     brandedFare: segmentFareMap[segments[0].id]?.brandedFare ?? null,
     fareBasis: segmentFareMap[segments[0].id]?.fareBasis ?? null,
@@ -86,32 +84,38 @@ function mapOfferToOption(offer) {
         class: fareInfo.class,
         brandedFare: fareInfo.brandedFare,
         fareBasis: fareInfo.fareBasis,
-        checkedBags: fareInfo.checkedBags
+        checkedBags: fareInfo.checkedBags,
       };
     }),
   };
 }
 
-// Main endpoint GPT will call
+/* ---------------------------------------------------------
+   MAIN ENDPOINT
+--------------------------------------------------------- */
+
 app.post('/search_flights', async (req, res) => {
   try {
     const {
-      tripType = 'oneway',        // 'oneway' | 'roundtrip' | 'multi'
+      tripType = 'oneway',
       origin,
       destination,
       departureDate,
-      returnDate,                 // used for roundtrip
-      segments,                   // used for multi
+      returnDate,
+      segments,
       adults = 1,
       currency = 'KWD',
       max = 5,
-      maxPrice                    // optional budget filter
+      maxPrice,
+      travelClass            // NEW!
     } = req.body;
 
     const token = await getAccessToken();
     const url = 'https://test.api.amadeus.com/v2/shopping/flight-offers';
 
-    // ---------- ONE-WAY & ROUNDTRIP ----------
+    /* ---------------------------------------------------------
+       ONE-WAY & ROUNDTRIP
+    --------------------------------------------------------- */
     if (tripType === 'oneway' || tripType === 'roundtrip') {
       if (!origin || !destination || !departureDate) {
         return res
@@ -125,10 +129,9 @@ app.post('/search_flights', async (req, res) => {
         departureDate,
         adults,
         currencyCode: currency,
-        max
+        max,
       };
 
-      // Roundtrip support (single Amadeus call with returnDate)
       if (tripType === 'roundtrip') {
         if (!returnDate) {
           return res
@@ -138,22 +141,19 @@ app.post('/search_flights', async (req, res) => {
         params.returnDate = returnDate;
       }
 
-      // Budget filter (Amadeus side)
-      if (maxPrice) {
-        params.maxPrice = maxPrice;
-      }
+      if (maxPrice) params.maxPrice = maxPrice;
+      if (travelClass) params.travelClass = travelClass;
 
       const amadeusResponse = await axios.get(url, {
         headers: { Authorization: `Bearer ${token}` },
-        params
+        params,
       });
 
       let offers = amadeusResponse.data.data || [];
       let options = offers.map(mapOfferToOption);
 
-      // Extra budget filter (our side)
       if (maxPrice) {
-        options = options.filter((opt) => opt.price <= maxPrice);
+        options = options.filter((o) => o.price <= maxPrice);
       }
 
       return res.json({
@@ -162,27 +162,29 @@ app.post('/search_flights', async (req, res) => {
         destination,
         departureDate,
         returnDate: tripType === 'roundtrip' ? returnDate : undefined,
-        options
+        options,
       });
     }
 
-    // ---------- MULTI-CITY ----------
+    /* ---------------------------------------------------------
+       MULTI-CITY
+    --------------------------------------------------------- */
     if (tripType === 'multi') {
-      // segments = [{ origin, destination, date }, ...]
       if (!Array.isArray(segments) || segments.length === 0) {
-        return res
-          .status(400)
-          .json({ error: 'segments array is required for multi-city searches' });
+        return res.status(400).json({
+          error: 'segments array is required for multi-city searches',
+        });
       }
 
       const legs = [];
 
       for (let i = 0; i < segments.length; i++) {
         const seg = segments[i];
+
         if (!seg.origin || !seg.destination || !seg.date) {
           return res.status(400).json({
             error:
-              'Each segment must include origin, destination, and date (YYYY-MM-DD)'
+              'Each segment must include origin, destination, and date (YYYY-MM-DD)',
           });
         }
 
@@ -192,23 +194,22 @@ app.post('/search_flights', async (req, res) => {
           departureDate: seg.date,
           adults,
           currencyCode: currency,
-          max
+          max,
         };
 
-        if (maxPrice) {
-          params.maxPrice = maxPrice;
-        }
+        if (maxPrice) params.maxPrice = maxPrice;
+        if (travelClass) params.travelClass = travelClass;
 
         const legRes = await axios.get(url, {
           headers: { Authorization: `Bearer ${token}` },
-          params
+          params,
         });
 
         let legOffers = legRes.data.data || [];
         let legOptions = legOffers.map(mapOfferToOption);
 
         if (maxPrice) {
-          legOptions = legOptions.filter((opt) => opt.price <= maxPrice);
+          legOptions = legOptions.filter((o) => o.price <= maxPrice);
         }
 
         legs.push({
@@ -216,7 +217,7 @@ app.post('/search_flights', async (req, res) => {
           origin: seg.origin,
           destination: seg.destination,
           date: seg.date,
-          options: legOptions
+          options: legOptions,
         });
       }
 
@@ -226,14 +227,14 @@ app.post('/search_flights', async (req, res) => {
         currency,
         max,
         maxPrice: maxPrice || undefined,
-        legs
+        legs,
       });
     }
 
-    // If tripType is something else
     return res.status(400).json({
-      error: "tripType must be 'oneway', 'roundtrip', or 'multi'"
+      error: "tripType must be 'oneway', 'roundtrip', or 'multi'",
     });
+
   } catch (error) {
     console.error(
       'Error searching flights:',
@@ -246,6 +247,9 @@ app.post('/search_flights', async (req, res) => {
   }
 });
 
+/* ---------------------------------------------------------
+   SERVER START
+--------------------------------------------------------- */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
