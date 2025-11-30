@@ -27,6 +27,7 @@ async function getAccessToken() {
 }
 
 // Helper to map a single Amadeus offer into our simplified format
+// Helper to map a single Amadeus offer into our simplified format
 function mapOfferToOption(offer) {
   const price = offer.price.total;
   const currencyCode = offer.price.currency;
@@ -34,12 +35,46 @@ function mapOfferToOption(offer) {
   const duration = firstItinerary.duration;
   const segments = firstItinerary.segments;
 
+  // Try to extract cabin class (ECONOMY, BUSINESS, etc.)
+  let cabinClass = null;
+  let checkedBags = null;
+  let fareBasis = null;
+  let brandedFare = null;
+
+  try {
+    const firstTraveler = offer.travelerPricings?.[0];
+    const firstFareDetail = firstTraveler?.fareDetailsBySegment?.[0];
+
+    cabinClass = firstFareDetail?.cabin || null;
+
+    // Included checked bags (e.g. 1, 2)
+    if (firstFareDetail?.includedCheckedBags) {
+      if (typeof firstFareDetail.includedCheckedBags.quantity === 'number') {
+        checkedBags = firstFareDetail.includedCheckedBags.quantity;
+      }
+    }
+
+    // Fare info (helps GPT talk about flexibility)
+    fareBasis = firstFareDetail?.fareBasis || null;
+    // e.g. "SAVER", "FLEX" – depends on airline
+    brandedFare = firstFareDetail?.brandedFare || null;
+  } catch (err) {
+    cabinClass = cabinClass || null;
+    checkedBags = checkedBags || null;
+    fareBasis = fareBasis || null;
+    brandedFare = brandedFare || null;
+  }
+
   return {
     id: offer.id,
     price: parseFloat(price),
     currency: currencyCode,
     duration,
     airline: segments[0]?.carrierCode,
+    cabin: cabinClass,         // ⬅ seat class
+    checkedBags,               // ⬅ number of checked bags included (if known)
+    fareBasis,                 // ⬅ fare basis code
+    brandedFare,               // ⬅ fare family name (e.g., saver/flex)
     segments: segments.map((s) => ({
       from: s.departure.iataCode,
       to: s.arrival.iataCode,
