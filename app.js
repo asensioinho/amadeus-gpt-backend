@@ -29,60 +29,66 @@ async function getAccessToken() {
 // Helper to map a single Amadeus offer into our simplified format
 // Helper to map a single Amadeus offer into our simplified format
 function mapOfferToOption(offer) {
-  const price = offer.price.total;
-  const currencyCode = offer.price.currency;
   const firstItinerary = offer.itineraries[0];
-  const duration = firstItinerary.duration;
   const segments = firstItinerary.segments;
 
-  // Try to extract cabin class (ECONOMY, BUSINESS, etc.)
-  let cabinClass = null;
-  let checkedBags = null;
-  let fareBasis = null;
-  let brandedFare = null;
+  // travelerPricing (contains fare, baggage, cabin info)
+  const traveler = offer.travelerPricings?.[0] || {};
+  const fareDetails = traveler.fareDetailsBySegment || [];
 
-  try {
-    const firstTraveler = offer.travelerPricings?.[0];
-    const firstFareDetail = firstTraveler?.fareDetailsBySegment?.[0];
+  // Build segment-level fare mapping
+  const segmentFareMap = {};
+  fareDetails.forEach((fd) => {
+    const segId = fd.segmentId;
+    segmentFareMap[segId] = {
+      cabin: fd.cabin || null,
+      class: fd.class || null,
+      brandedFare: fd.brandedFare || null,
+      fareBasis: fd.fareBasis || null,
+      checkedBags: fd.includedCheckedBags?.quantity ?? null
+    };
+  });
 
-    cabinClass = firstFareDetail?.cabin || null;
-
-    // Included checked bags (e.g. 1, 2)
-    if (firstFareDetail?.includedCheckedBags) {
-      if (typeof firstFareDetail.includedCheckedBags.quantity === 'number') {
-        checkedBags = firstFareDetail.includedCheckedBags.quantity;
-      }
-    }
-
-    // Fare info (helps GPT talk about flexibility)
-    fareBasis = firstFareDetail?.fareBasis || null;
-    // e.g. "SAVER", "FLEX" – depends on airline
-    brandedFare = firstFareDetail?.brandedFare || null;
-  } catch (err) {
-    cabinClass = cabinClass || null;
-    checkedBags = checkedBags || null;
-    fareBasis = fareBasis || null;
-    brandedFare = brandedFare || null;
-  }
+  // DEFAULT: if no segment-specific data available
+  const fallbackFare = {
+    cabin: null,
+    class: null,
+    brandedFare: null,
+    fareBasis: null,
+    checkedBags: null
+  };
 
   return {
     id: offer.id,
-    price: parseFloat(price),
-    currency: currencyCode,
-    duration,
+    price: parseFloat(offer.price.total),
+    currency: offer.price.currency,
+    duration: firstItinerary.duration,
     airline: segments[0]?.carrierCode,
-    cabin: cabinClass,         // ⬅ seat class
-    checkedBags,               // ⬅ number of checked bags included (if known)
-    fareBasis,                 // ⬅ fare basis code
-    brandedFare,               // ⬅ fare family name (e.g., saver/flex)
-    segments: segments.map((s) => ({
-      from: s.departure.iataCode,
-      to: s.arrival.iataCode,
-      departureTime: s.departure.at,
-      arrivalTime: s.arrival.at,
-      carrier: s.carrierCode,
-      flightNumber: s.number,
-    })),
+
+    // For overall cabin/baggage: use the FIRST segment of the trip
+    cabin: segmentFareMap[segments[0].id]?.cabin ?? null,
+    brandedFare: segmentFareMap[segments[0].id]?.brandedFare ?? null,
+    fareBasis: segmentFareMap[segments[0].id]?.fareBasis ?? null,
+    checkedBags: segmentFareMap[segments[0].id]?.checkedBags ?? null,
+
+    segments: segments.map((s) => {
+      const fareInfo = segmentFareMap[s.id] || fallbackFare;
+
+      return {
+        from: s.departure.iataCode,
+        to: s.arrival.iataCode,
+        departureTime: s.departure.at,
+        arrivalTime: s.arrival.at,
+        carrier: s.carrierCode,
+        flightNumber: s.number,
+
+        cabin: fareInfo.cabin,
+        class: fareInfo.class,
+        brandedFare: fareInfo.brandedFare,
+        fareBasis: fareInfo.fareBasis,
+        checkedBags: fareInfo.checkedBags
+      };
+    }),
   };
 }
 
